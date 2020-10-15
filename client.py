@@ -230,11 +230,14 @@ class MarlinServiceClient(object):
                 features: list of features to fetch
         """
         modified_features = []
+        dict = {}
         for feature_def in features:
             split = feature_def.split(':', 1)
             modified_features.append(self.client_id + split[0] + ":" + split[1])
+            dict[self.client_id + split[0] + "." + split[1]] = feature_def
+        df = self.batch_store.get_batch_features(entity_df, modified_features)
 
-        return self.batch_store.get_batch_features(entity_df, modified_features)
+        return df.rename(columns=dict)
 
     @lru_cache(maxsize=None)
     def __get_feature_group_definition(self, feature_group_name):
