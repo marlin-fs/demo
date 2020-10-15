@@ -12,3 +12,4 @@ scikit-learn
 lightgbm
 regex
 feather-format
+s3fs

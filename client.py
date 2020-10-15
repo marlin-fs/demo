@@ -10,12 +10,8 @@ from marlin_service_pb2 import DataType
 from marlin_service_pb2 import IngestionMessage
 from batch_feature_store.batch_feature_request import PandasParquetBatchFeaturesRequest
 import inspect
-
-# SERVER_ADDRESS = 'adf0a1d0751e2408f90c70b57f632f40-2005567722.us-west-2.elb.amazonaws.com'
-# PORT = 7060
-
-SERVER_ADDRESS = '0.0.0.0'
-PORT = 6060
+import configparser
+from pathlib import Path
 
 
 def update_feature_group(func):
@@ -81,42 +77,34 @@ def get_feature_value(fv, data_type):
         raise Exception(f'Unknown data type {data_type} for field {fv}')
 
 
-class MarlinServiceClient(object):
-    """
-    Client for gRPC functionality
-    """
-
+class Client(object):
     def __init__(self,
                  server_address,
                  server_port,
                  root_location):
         """Initializer.
-           Creates a gRPC channel for connecting to the server.
-           Adds the channel to the generated client stub.
-        Arguments:
-            server_address: host address to marlin server
-            server_port: marlin server port
-            root_location: root directory to marlin store
-        Returns:
-            None.
-        """
+                  Creates a gRPC channel for connecting to the server.
+                  Adds the channel to the generated client stub.
+               Arguments:
+                   server_address: host address to marlin server
+                   server_port: marlin server port
+                   root_location: root directory to marlin store
+               Returns:
+                   None.
+               """
         self.channel = grpc.insecure_channel(f'{server_address}:{server_port}')
         self.stub = marlin_service_pb2_grpc.MarlinServiceStub(self.channel)
         self.batch_store = PandasParquetBatchFeaturesRequest(root_location, self.stub)
-        self.client_id = "test_"
 
-    @update_feature_group
     def get_features_as_dict(self, feature_group_name, entities, features):
         return to_feature_dict(self.__get_features_helper(feature_group_name, entities, features).result(),
                                self.__get_feature_group_definition(feature_group_name),
                                feature_group_name.split(self.client_id, 1)[1])
 
-    @update_feature_group
     def get_features(self, feature_group_name, entities, features):
         return self.__get_features_helper(feature_group_name=feature_group_name,
                                           entities=entities, features=features).result()
 
-    @update_feature_group
     def get_features_async(self, feature_group_name, entities, features):
         """Gets a set of features
         Arguments:
@@ -129,18 +117,14 @@ class MarlinServiceClient(object):
         """
         return self.__get_features_helper(feature_group_name=feature_group_name, entities=entities, features=features)
 
-    def __get_features_helper(self, feature_group_name, entities, features):
-        feature_request = FeatureRequestDetails()
-        feature_request.feature_group_name = feature_group_name
+    def get_batch_features(self, entity_df, features):
+        """ Read batch data as Pandas Dataframe
+            Arguments:
+                entity_df: Dataframe containing entity and target timestamp
+                features: list of features to fetch
+        """
+        return self.batch_store.get_batch_features(entity_df, features)
 
-        feature_group_definition = self.__get_feature_group_definition(feature_group_name)
-        dict_set_helper_with_data_type(entities, feature_request.entities, feature_group_definition.entities)
-
-        feature_request.features_requested.extend(features)
-
-        return self.stub.FeatureRequest.future(feature_request)
-
-    @update_feature_group
     def register_feature_group(self,
                                feature_group_name,
                                author,
@@ -170,7 +154,6 @@ class MarlinServiceClient(object):
 
         return self.stub.FeatureGroupRegistration(feature_group_definitions)
 
-    @update_feature_group
     def feature_ingest(self, df, entity_name, feature_group_name, event_ts):
         future_list = []
         feature_row = {}
@@ -190,7 +173,6 @@ class MarlinServiceClient(object):
         for future in future_list:
             future.result()
 
-    @update_feature_group
     def ingest_features(self,
                         feature_group_name,
                         event_timestamp,
@@ -206,6 +188,17 @@ class MarlinServiceClient(object):
         """
         return self.__ingest_feature_helper(feature_group_name=feature_group_name, event_timestamp=event_timestamp,
                                             entities=entities, features=features)
+
+    def __get_features_helper(self, feature_group_name, entities, features):
+        feature_request = FeatureRequestDetails()
+        feature_request.feature_group_name = feature_group_name
+
+        feature_group_definition = self.__get_feature_group_definition(feature_group_name)
+        dict_set_helper_with_data_type(entities, feature_request.entities, feature_group_definition.entities)
+
+        feature_request.features_requested.extend(features)
+
+        return self.stub.FeatureRequest.future(feature_request)
 
     def __ingest_feature_helper(self,
                                 feature_group_name,
@@ -223,6 +216,104 @@ class MarlinServiceClient(object):
 
         return self.stub.IngestRequest.future(ingest_request)
 
+    @lru_cache(maxsize=None)
+    def __get_feature_group_definition(self, feature_group_name):
+        return self.stub.FeatureGroupDefinitionRequest(
+            FeatureGroupDefinitionRequestDetails(feature_group_name=feature_group_name))
+
+
+class MarlinServiceClient(Client):
+    """
+    Client for gRPC functionality
+    """
+
+    def __init__(self,
+                 server_address,
+                 server_port,
+                 root_location):
+        """Initializer.
+           Creates a gRPC channel for connecting to the server.
+           Adds the channel to the generated client stub.
+        Arguments:
+            server_address: host address to marlin server
+            server_port: marlin server port
+            root_location: root directory to marlin store
+        Returns:
+            None.
+        """
+        super().__init__(server_address, server_port, root_location)
+        config = configparser.ConfigParser(allow_no_value=True)
+        config.read(str(Path.home()) + '/.marlin/config')
+        self.client_id = config['default']['client_id']
+
+    @update_feature_group
+    def get_features_as_dict(self, feature_group_name, entities, features):
+        return super(MarlinServiceClient, self).get_features_as_dict(feature_group_name, entities, features)
+
+    @update_feature_group
+    def get_features(self, feature_group_name, entities, features):
+        return super(MarlinServiceClient, self).get_features(feature_group_name=feature_group_name,
+                                                             entities=entities, features=features)
+
+    @update_feature_group
+    def get_features_async(self, feature_group_name, entities, features):
+        """Gets a set of features
+        Arguments:
+            feature_group_name: name of the feature group for which feature data is needed
+            entities: dictionary containing values for all the entities in this feature group
+            *features: feature list such [f1,f2] which are to be fetched
+
+        Returns:
+            returns a key, value - dict {"f1":24,"f2":34}
+        """
+        return super(MarlinServiceClient, self).get_features_async(feature_group_name=feature_group_name,
+                                                                   entities=entities, features=features)
+
+    @update_feature_group
+    def register_feature_group(self,
+                               feature_group_name,
+                               author,
+                               online,
+                               offline,
+                               source_code,
+                               entities,
+                               features):
+        """ Register a Feature Group
+            Arguments:
+                feature_group_name: name of the feature group
+                author: name of the author for this feature group
+                online: flag to indicate whether this features of this feature group need to be available online
+                offline: flag to indicate whether this features of this feature group need to be available offline
+                source_code: source code or link to source code generating this source code
+                entities: dictionary of entities with their data types
+                features: dictionary of features with their data types
+        """
+
+        return super(MarlinServiceClient, self).register_feature_group(feature_group_name, author, online, offline,
+                                                                       source_code, entities, features)
+
+    @update_feature_group
+    def feature_ingest(self, df, entity_name, feature_group_name, event_ts):
+        return super(MarlinServiceClient, self).feature_ingest(df, entity_name, feature_group_name, event_ts)
+
+    @update_feature_group
+    def ingest_features(self,
+                        feature_group_name,
+                        event_timestamp,
+                        entities,
+                        features):
+        """ Ingest feature to feature store
+            Arguments:
+                feature_group_name: name of the feature group
+                event_timestamp: feature generation timestamp
+                entities: dictionary of entities with their data types
+                features: dictionary of features with their data types
+
+        """
+        return super(MarlinServiceClient, self).ingest_features(feature_group_name=feature_group_name,
+                                                                event_timestamp=event_timestamp,
+                                                                entities=entities, features=features)
+
     def get_batch_features(self, entity_df, features):
         """ Read batch data as Pandas Dataframe
             Arguments:
@@ -235,11 +326,6 @@ class MarlinServiceClient(object):
             split = feature_def.split(':', 1)
             modified_features.append(self.client_id + split[0] + ":" + split[1])
             dict[self.client_id + split[0] + "." + split[1]] = feature_def
-        df = self.batch_store.get_batch_features(entity_df, modified_features)
+        df = super(MarlinServiceClient, self).get_batch_features(entity_df, modified_features)
 
         return df.rename(columns=dict)
-
-    @lru_cache(maxsize=None)
-    def __get_feature_group_definition(self, feature_group_name):
-        return self.stub.FeatureGroupDefinitionRequest(
-            FeatureGroupDefinitionRequestDetails(feature_group_name=feature_group_name))
