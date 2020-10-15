@@ -57,10 +57,8 @@ class PandasParquetBatchFeaturesRequest(BatchFeaturesRequest):
 
     @staticmethod
     def read_files_to_pandas(root_location, feature_group, columns):
-        path = f'{root_location}/{feature_group}/*/part*'
-        file_list = [file.path for file in fsspec.open_files(path)]
-        df_list = [pq.read_pandas(f, columns).to_pandas() for f in file_list]
-        return pd.concat(df_list, ignore_index=True)
+        fs, _, paths = fsspec.get_fs_token_paths(f'{root_location}/{feature_group}/*/part*')
+        return fs.read_parquet(path=paths, columns=columns).to_pandas()
 
     @staticmethod
     def read_feature_group_def(marlin_stub, feature_group):

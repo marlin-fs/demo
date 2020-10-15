@@ -1,4 +1,5 @@
 from functools import lru_cache
+from functools import wraps
 
 import grpc
 import marlin_service_pb2_grpc
@@ -8,12 +9,28 @@ from marlin_service_pb2 import FeatureGroupDefinitionRequestDetails
 from marlin_service_pb2 import DataType
 from marlin_service_pb2 import IngestionMessage
 from batch_feature_store.batch_feature_request import PandasParquetBatchFeaturesRequest
+import inspect
 
 # SERVER_ADDRESS = 'adf0a1d0751e2408f90c70b57f632f40-2005567722.us-west-2.elb.amazonaws.com'
 # PORT = 7060
 
 SERVER_ADDRESS = '0.0.0.0'
 PORT = 6060
+
+
+def update_feature_group(func):
+    @wraps(func)
+    def upate_feature_group_helper(*args, **kwargs):
+        if 'feature_group_name' in kwargs:
+            kwargs['feature_group_name'] = args[0].client_id + kwargs['feature_group_name']
+            return func(*args, **kwargs)
+        else:
+            index = inspect.getfullargspec(func).args.index('feature_group_name')
+            new_args = list(args)
+            new_args[index] = new_args[0].client_id + args[index]
+            return func(*new_args, **kwargs)
+
+    return upate_feature_group_helper
 
 
 def dict_set_helper(dict, field):
@@ -61,7 +78,7 @@ def get_feature_value(fv, data_type):
     elif DataType.STRING == data_type:
         return fv.string_val
     else:
-        raise Exception(f'Unkown data type {data_type} for field {fv}')
+        raise Exception(f'Unknown data type {data_type} for field {fv}')
 
 
 class MarlinServiceClient(object):
@@ -86,42 +103,20 @@ class MarlinServiceClient(object):
         self.channel = grpc.insecure_channel(f'{server_address}:{server_port}')
         self.stub = marlin_service_pb2_grpc.MarlinServiceStub(self.channel)
         self.batch_store = PandasParquetBatchFeaturesRequest(root_location, self.stub)
+        self.client_id = "test_"
 
-    def feature_ingest(self, df, entity_name, feature_group, event_ts):
-        future_list = []
-        feature_row = {}
-        entity = {}
-        cnt = 0
-        for row in df.to_dict(orient='records'):
-            for key in row:
-                if key in entity_name:
-                    entity[key] = row[key]
-                else:
-                    feature_row[key] = row[key]
-            future = self.ingest_features(feature_group_name=feature_group,
-                                            event_timestamp=event_ts,
-                                            entities=entity,
-                                            features=feature_row)
-            future_list.append(future)
-            cnt += 1
-            if cnt % 5000 == 0:
-                print("Ingested row ", cnt, " of ", len(df))
-                print('')
-                print('Sample feature row ingested:')
-                print(feature_row)
-
-        for future in future_list:
-            future.result()
-        print("Dataframe ingestion successfully completed!")
-        print('')
-
+    @update_feature_group
     def get_features_as_dict(self, feature_group_name, entities, features):
-        return to_feature_dict(self.get_features(feature_group_name, entities, features),
-                               self.get_feature_group_definition(feature_group_name),feature_group_name)
+        return to_feature_dict(self.__get_features_helper(feature_group_name, entities, features).result(),
+                               self.__get_feature_group_definition(feature_group_name),
+                               feature_group_name.split(self.client_id, 1)[1])
 
+    @update_feature_group
     def get_features(self, feature_group_name, entities, features):
-        return self.get_features_async(feature_group_name, entities, features).result()
+        return self.__get_features_helper(feature_group_name=feature_group_name,
+                                          entities=entities, features=features).result()
 
+    @update_feature_group
     def get_features_async(self, feature_group_name, entities, features):
         """Gets a set of features
         Arguments:
@@ -132,16 +127,20 @@ class MarlinServiceClient(object):
         Returns:
             returns a key, value - dict {"f1":24,"f2":34}
         """
+        return self.__get_features_helper(feature_group_name=feature_group_name, entities=entities, features=features)
+
+    def __get_features_helper(self, feature_group_name, entities, features):
         feature_request = FeatureRequestDetails()
         feature_request.feature_group_name = feature_group_name
 
-        feature_group_definition = self.get_feature_group_definition(feature_group_name)
+        feature_group_definition = self.__get_feature_group_definition(feature_group_name)
         dict_set_helper_with_data_type(entities, feature_request.entities, feature_group_definition.entities)
 
         feature_request.features_requested.extend(features)
 
         return self.stub.FeatureRequest.future(feature_request)
 
+    @update_feature_group
     def register_feature_group(self,
                                feature_group_name,
                                author,
@@ -171,6 +170,27 @@ class MarlinServiceClient(object):
 
         return self.stub.FeatureGroupRegistration(feature_group_definitions)
 
+    @update_feature_group
+    def feature_ingest(self, df, entity_name, feature_group_name, event_ts):
+        future_list = []
+        feature_row = {}
+        entity = {}
+        for row in df.to_dict(orient='records'):
+            for key in row:
+                if key in entity_name:
+                    entity[key] = row[key]
+                else:
+                    feature_row[key] = row[key]
+            future = self.__ingest_feature_helper(feature_group_name=feature_group_name,
+                                                  event_timestamp=event_ts,
+                                                  entities=entity,
+                                                  features=feature_row)
+            future_list.append(future)
+
+        for future in future_list:
+            future.result()
+
+    @update_feature_group
     def ingest_features(self,
                         feature_group_name,
                         event_timestamp,
@@ -184,11 +204,19 @@ class MarlinServiceClient(object):
                 features: dictionary of features with their data types
 
         """
+        return self.__ingest_feature_helper(feature_group_name=feature_group_name, event_timestamp=event_timestamp,
+                                            entities=entities, features=features)
+
+    def __ingest_feature_helper(self,
+                                feature_group_name,
+                                event_timestamp,
+                                entities,
+                                features):
         ingest_request = IngestionMessage()
         ingest_request.feature_group_name = feature_group_name
         ingest_request.event_timestamp = event_timestamp
 
-        feature_group_definition = self.get_feature_group_definition(feature_group_name)
+        feature_group_definition = self.__get_feature_group_definition(feature_group_name)
 
         dict_set_helper_with_data_type(entities, ingest_request.entities, feature_group_definition.entities)
         dict_set_helper_with_data_type(features, ingest_request.features, feature_group_definition.features)
@@ -201,9 +229,14 @@ class MarlinServiceClient(object):
                 entity_df: Dataframe containing entity and target timestamp
                 features: list of features to fetch
         """
-        return self.batch_store.get_batch_features(entity_df, features)
+        modified_features = []
+        for feature_def in features:
+            split = feature_def.split(':', 1)
+            modified_features.append(self.client_id + split[0] + ":" + split[1])
+
+        return self.batch_store.get_batch_features(entity_df, modified_features)
 
     @lru_cache(maxsize=None)
-    def get_feature_group_definition(self, feature_group_name):
+    def __get_feature_group_definition(self, feature_group_name):
         return self.stub.FeatureGroupDefinitionRequest(
             FeatureGroupDefinitionRequestDetails(feature_group_name=feature_group_name))
