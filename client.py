@@ -325,7 +325,7 @@ class MarlinServiceClient(Client):
         for feature_def in features:
             split = feature_def.split(':', 1)
             modified_features.append(self.client_id + split[0] + ":" + split[1])
-            dict[self.client_id + split[0] + "." + split[1]] = feature_def
+            dict[self.client_id + split[0] + "." + split[1]] = split[0] + "." + split[1]
         df = super(MarlinServiceClient, self).get_batch_features(entity_df, modified_features)
 
         return df.rename(columns=dict)
