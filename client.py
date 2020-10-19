@@ -117,13 +117,13 @@ class Client(object):
         """
         return self.__get_features_helper(feature_group_name=feature_group_name, entities=entities, features=features)
 
-    def get_batch_features(self, entity_df, features):
+    def get_batch_features(self, **kwargs):
         """ Read batch data as Pandas Dataframe
             Arguments:
                 entity_df: Dataframe containing entity and target timestamp
                 features: list of features to fetch
         """
-        return self.batch_store.get_batch_features(entity_df, features).drop_duplicates()
+        return self.batch_store.get_batch_features(**kwargs).drop_duplicates()
 
     def register_feature_group(self,
                                feature_group_name,
@@ -154,18 +154,28 @@ class Client(object):
 
         return self.stub.FeatureGroupRegistration(feature_group_definitions)
 
-    def feature_ingest(self, df, entity_name, feature_group_name, event_ts):
+    def feature_ingest(self,**kwargs): 
+        for k, v in kwargs.items():
+            if k == 'data':
+                data=v
+            elif k == 'entities':
+                entities=v
+            elif k == 'feature_group_name':
+                feature_group_name=v
+            elif k == 'event_timestamp':
+                event_timestamp=v
+
         future_list = []
         feature_row = {}
         entity = {}
-        for row in df.to_dict(orient='records'):
+        for row in data.to_dict(orient='records'):
             for key in row:
-                if key in entity_name:
+                if key in entities:
                     entity[key] = row[key]
                 else:
                     feature_row[key] = row[key]
             future = self.__ingest_feature_helper(feature_group_name=feature_group_name,
-                                                  event_timestamp=event_ts,
+                                                  event_timestamp=event_timestamp,
                                                   entities=entity,
                                                   features=feature_row)
             future_list.append(future)
@@ -293,8 +303,8 @@ class MarlinServiceClient(Client):
                                                                        source_code, entities, features)
 
     @update_feature_group
-    def feature_ingest(self, df, entity_name, feature_group_name, event_ts):
-        return super(MarlinServiceClient, self).feature_ingest(df, entity_name, feature_group_name, event_ts)
+    def feature_ingest(self, **kwargs):
+        return super(MarlinServiceClient, self).feature_ingest(**kwargs)
 
     @update_feature_group
     def ingest_features(self,
@@ -314,18 +324,24 @@ class MarlinServiceClient(Client):
                                                                 event_timestamp=event_timestamp,
                                                                 entities=entities, features=features)
 
-    def get_batch_features(self, entity_df, features):
+    def get_batch_features(self, **kwargs):
         """ Read batch data as Pandas Dataframe
             Arguments:
                 entity_df: Dataframe containing entity and target timestamp
                 features: list of features to fetch
         """
+        for k, v in kwargs.items():
+            if k == 'entity_df':
+                entity_df=v
+            elif k == 'features':
+                features=v
+                
         modified_features = []
         dict = {}
         for feature_def in features:
             split = feature_def.split(':', 1)
             modified_features.append(self.client_id + split[0] + ":" + split[1])
             dict[self.client_id + split[0] + "." + split[1]] = split[0] + "." + split[1]
-        df = super(MarlinServiceClient, self).get_batch_features(entity_df, modified_features)
+        df = super(MarlinServiceClient, self).get_batch_features(entity_df=entity_df, features=modified_features)
 
         return df.rename(columns=dict)
