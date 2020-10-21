@@ -123,7 +123,13 @@ class Client(object):
                 entity_df: Dataframe containing entity and target timestamp
                 features: list of features to fetch
         """
-        return self.batch_store.get_batch_features(**kwargs).drop_duplicates()
+        for k, v in kwargs.items():
+            if k == 'entity_df':
+                entity_df=v
+            elif k == 'features':
+                features=v
+                
+        return self.batch_store.get_batch_features(entity_df,features).drop_duplicates()
 
     def register_feature_group(self,
                                feature_group_name,
